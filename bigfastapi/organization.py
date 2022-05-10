@@ -11,6 +11,8 @@ from fastapi.responses import FileResponse
 from sqlalchemy import and_
 
 from bigfastapi.db.database import get_db
+from bigfastapi.models import organisation_models
+from bigfastapi.models.menu_model import addDefaultMenuList, getOrgMenu
 from bigfastapi.schemas import roles_schemas
 from .auth_api import is_authenticated
 from .files import upload_image
@@ -25,53 +27,189 @@ from .utils.utils import paginate_data, row_to_dict
 app = APIRouter(tags=["Organization"])
 
 
-@app.post("/organizations", response_model=_schemas.Organization)
-async def create_organization(
+@app.post("/organizations")
+def create_organization(
         organization: _schemas.OrganizationCreate,
         user: str = _fastapi.Depends(is_authenticated),
         db: _orm.Session = _fastapi.Depends(get_db),
 ):
-    db_org = await get_orgnanization_by_name(name=organization.name, db=db)
+    db_org = get_orgnanization_by_name(name=organization.name, db=db)
 
     if db_org:
         raise _fastapi.HTTPException(
             status_code=400, detail="Organization name already in use")
-    created_org = await create_organization(user=user, db=db, organization=organization)
+    created_org = create_organization(
+        user=user, db=db, organization=organization)
+
+    assocMenu = addDefaultMenuList(
+        created_org.id, created_org.business_type, db)
+
+    runWalletCreation(created_org, db)
+
+    defaultTemplates = [
+        {
+            "escalation_level": 1,
+            "email_message":
+                'Trust this meets you well This is to remind you that your payment for $debt is due. Please take a moment to make the payment by clicking here - $paymentlink. If you have any questions dont hesitate to reply to this email.',
+            "subject": 'Reminder: Your Debt Is Due',
+            "sms_message":
+                'a kind reminder that your debt of $amount is due. Please click the this link to pay the balance owed - ',
+        },
+        {
+
+            "escalation_level": 2,
+            "email_message":
+                'Trust this meets you well Your debt with us is overdue and you have limited time to clear it. Please click here to pay - $paymentLink or request for payment options.',
+            "subject": 'Important',
+            "sms_message":
+                'your debt of $amount is overdue. To clear it, click this link to pay - '
+        },
+        {
+
+            "escalation_level": 3,
+
+            "email_message":
+                'We are yet to receive your overdue payment for $debt. This is becoming really problematic for us and a late payment fee will be applied. Please settle your outstanding balance immediately to avoid this. Click here to pay - $paymentLink',
+            "subject":
+                'Payment Reminder: Pay Debt Today to Avoid Late Payment Chargest',
+            "sms_message":
+                'your long overdue debt of $amount has not been paid, please make payment to avoid charges. Pay here - ',
+        },
+        {
+
+            "escalation_level": 4,
+            "subject": 'Alert',
+            "email_message":
+                'This is a reminder that your debt is now overdue by weeks since the due date and a late payment fee now applies. Please arrange your payment today.',
+            "sms_message":
+                ' your debt of $amount has not been paid despite previous reminders and a late payment fee now applies. Hurry and pay now - ',
+
+        },
+    ]
 
     if organization.add_template == True:
-        template_obj = _models.DefaultTemplates(
-            id=uuid4().hex, organization_id=created_org.id, subject="Reminder_One",
-            escalation_level=1, email_message="This is the first default email template created for this business.",
-            sms_message="This is the first default sms template created for this business",
-            is_deleted=False, greeting="Reminder_Greetings", template_type="BOTH"
-        )
+        try:
 
-        db.add(template_obj)
-        db.commit()
-        db.refresh(template_obj)
+            for temp in defaultTemplates:
+                template_obj = organisation_models.DefaultTemplates(
+                    id=uuid4(
+                    ).hex, organization_id=created_org.id, subject=temp["subject"],
+                    escalation_level=temp["escalation_level"], email_message=temp["email_message"],
+                    sms_message=temp["sms_message"],
+                    is_deleted=False, template_type="BOTH"
+                )
 
-        template_obj = _models.DefaultTemplates(
-            id=uuid4().hex, organization_id=created_org.id, subject="Reminder_Two",
-            escalation_level=1, email_message="This is the second default email template created for this business.",
-            sms_message="This is the second default sms template created for this business",
-            is_deleted=False, greeting="Reminder_Greetings", template_type="BOTH"
-        )
+                db.add(template_obj)
+                db.commit()
+                db.refresh(template_obj)
 
-        db.add(template_obj)
-        db.commit()
-        db.refresh(template_obj)
+        except:
+            print("ail To Create Templates")
 
-    return created_org
+        try:
+
+            autoreminder_obj = organisation_models.DefaultAutoReminder(
+                id=uuid4().hex, organization_id=created_org.id, days_before_debt=3,
+                first_template="escalation_level_1", second_template="escalation_level_3")
+
+            db.add(autoreminder_obj)
+            db.commit()
+            db.refresh(autoreminder_obj)
+
+        except:
+            print('could not create auto reminder default')
+
+    newOrId = created_org.id
+    newOrg = created_org
+    newMenList = assocMenu["menu_list"]
+    newMenu = assocMenu
+
+    return {"data": {"business": newOrg, "menu": newMenu}}
+
+
+# @app.post("/st-paul")
+# def st_paul(db: _orm.Session = _fastapi.Depends(get_db)):
+#     orgs = db.query(_models.Organization).filter(
+#         _models.Organization.is_deleted == False).all()
+
+#     print(orgs)
+
+#     for org in orgs:
+#         dt_org = db.query(_models.DefaultTemplates).filter(
+#             _models.DefaultTemplates.organization_id == org.id).all()
+
+#         if len(dt_org) == 0:
+
+#             defaultTemplates = [
+#                 {
+#                     "escalation_level": 1,
+#                     "email_message":
+#                         'Trust this meets you well This is to remind you that your payment for $debt is due. Please take a moment to make the payment by clicking here - $paymentlink. If you have any questions dont hesitate to reply to this email.',
+#                     "subject": 'Reminder: Your Debt Is Due',
+#                     "sms_message":
+#                         'a kind reminder that your debt of $amount is due. Please click the this link to pay the balance owed - ',
+#                 },
+#                 {
+
+#                     "escalation_level": 2,
+#                     "email_message":
+#                         'Trust this meets you well Your debt with us is overdue and you have limited time to clear it. Please click here to pay - $paymentLink or request for payment options.',
+#                     "subject": 'Important',
+#                     "sms_message":
+#                         'your debt of $amount is overdue. To clear it, click this link to pay - '
+#                 },
+#                 {
+
+#                     "escalation_level": 3,
+
+#                     "email_message":
+#                         'We are yet to receive your overdue payment for $debt. This is becoming really problematic for us and a late payment fee will be applied. Please settle your outstanding balance immediately to avoid this. Click here to pay - $paymentLink',
+#                     "subject":
+#                         'Payment Reminder: Pay Debt Today to Avoid Late Payment Chargest',
+#                     "sms_message":
+#                         'your long overdue debt of $amount has not been paid, please make payment to avoid charges. Pay here - ',
+#                 },
+#                 {
+
+#                     "escalation_level": 4,
+#                     "subject": 'Alert',
+#                     "email_message":
+#                         'This is a reminder that your debt is now overdue by weeks since the due date and a late payment fee now applies. Please arrange your payment today.',
+#                     "sms_message":
+#                         ' your debt of $amount has not been paid despite previous reminders and a late payment fee now applies. Hurry and pay now - ',
+
+#                 },
+#             ]
+
+#             for temp in defaultTemplates:
+#                 template_obj = _models.DefaultTemplates(
+#                     id=uuid4(
+#                     ).hex, organization_id=org.id, subject=temp["subject"],
+#                     escalation_level=temp["escalation_level"], email_message=temp["email_message"],
+#                     sms_message=temp["sms_message"],
+#                     is_deleted=False, template_type="BOTH"
+#                 )
+
+#                 db.add(template_obj)
+#                 db.commit()
+#                 db.refresh(template_obj)
+
+
+# @app.delete("/st")
+# def delete_un(db: _orm.Session = _fastapi.Depends(get_db)):
+#     db.query(organisation_models.DefaultTemplates).filter(
+#         organisation_models.DefaultTemplates.organization_id == "IRZyXi2KRYDI").delete()
+#     db.commit()
 
 
 @app.get("/organizations")
-async def get_organizations(
+def get_organizations(
         user: users_schemas.User = _fastapi.Depends(is_authenticated),
         db: _orm.Session = _fastapi.Depends(get_db),
         page_size: int = 15,
         page_number: int = 1,
 ):
-    all_orgs = await get_organizations(user, db)
+    all_orgs = get_organizations(user, db)
 
     return paginate_data(all_orgs, page_size, page_number)
 
@@ -82,7 +220,9 @@ async def get_organization(
         user: users_schemas.User = _fastapi.Depends(is_authenticated),
         db: _orm.Session = _fastapi.Depends(get_db),
 ):
-    return await get_organization(organization_id, user, db)
+    organization = await get_organization(organization_id, user, db)
+    menu = getOrgMenu(organization_id, db)
+    return {"data": {"organization": organization, "menu": menu}}
 
 
 @app.get("/organizations/{organization_id}/users", status_code=200)
@@ -105,8 +245,8 @@ async def get_organization_users(
 
     organization = (
         db.query(_models.Organization)
-            .filter(_models.Organization.id == organization_id)
-            .first()
+        .filter(_models.Organization.id == organization_id)
+        .first()
     )
 
     if organization is None:
@@ -115,8 +255,8 @@ async def get_organization_users(
     store_owner_id = organization.creator
     store_owner = (
         db.query(user_models.User)
-            .filter(user_models.User.id == store_owner_id)
-            .first())
+        .filter(user_models.User.id == store_owner_id)
+        .first())
 
     invited_users = []
     if len(invited_list) > 0:
@@ -148,17 +288,18 @@ def delete_organization_user(
         db: _orm.Session = _fastapi.Depends(get_db)
 ):
     # fetch the organization user from the user table
-    user = db.query(user_models.User).filter(user_models.User.id == user_id).first()
+    user = db.query(user_models.User).filter(
+        user_models.User.id == user_id).first()
 
     if user is not None:
         # fetch the store user from the store user table.
         store_user = (
             db.query(store_user_model.StoreUser)
-                .filter(and_(
-                store_user_model.StoreUser.user_id == user_id,
-                store_user_model.StoreUser.store_id == organization_id
-            ))
-                .first()
+            .filter(and_(
+                    store_user_model.StoreUser.user_id == user_id,
+                    store_user_model.StoreUser.store_id == organization_id
+                    ))
+            .first()
         )
 
         store_user.is_deleted = True
@@ -177,7 +318,8 @@ def delete_organization_user(
 
 @app.get("/organizations/{organization_id}/roles")
 def get_roles(organization_id: str, db: _orm.Session = _fastapi.Depends(get_db)):
-    roles = db.query(role_models.Role).filter(role_models.Role.organization_id == organization_id)
+    roles = db.query(role_models.Role).filter(
+        role_models.Role.organization_id == organization_id)
     roles = list(map(roles_schemas.Role.from_orm, roles))
 
     return roles
@@ -194,8 +336,8 @@ def add_role(payload: roles_schemas.AddRole,
     if len(roles) < 1:
         existing_role = (
             db.query(role_models.Role)
-                .filter(role_models.Role.role_name == payload.role_name.lower())
-                .first()
+            .filter(role_models.Role.role_name == payload.role_name.lower())
+            .first()
         )
         if existing_role is None:
             role = role_models.Role(
@@ -221,19 +363,19 @@ def get_pending_invites(
 ):
     pending_invites = (
         db.query(store_invite_model.StoreInvite)
-            .filter(
+        .filter(
             and_(store_invite_model.StoreInvite.store_id == organization_id,
                  store_invite_model.StoreInvite.is_deleted == False,
                  store_invite_model.StoreInvite.is_accepted == False,
                  store_invite_model.StoreInvite.is_revoked == False
                  ))
-            .all()
+        .all()
     )
 
     return pending_invites
 
 
-@app.put("/organizations/{organization_id}", response_model=_schemas.OrganizationUpdate)
+@app.put("/organizations/{organization_id}")
 async def update_organization(organization_id: str, organization: _schemas.OrganizationUpdate,
                               user: users_schemas.User = _fastapi.Depends(
                                   is_authenticated),
@@ -294,7 +436,7 @@ async def delete_organization(organization_id: str, user: users_schemas.User = _
 # /////////////////////////////////////////////////////////////////////////////////
 # Organisation Services
 
-async def get_orgnanization_by_name(name: str, db: _orm.Session):
+def get_orgnanization_by_name(name: str, db: _orm.Session):
     return db.query(_models.Organization).filter(_models.Organization.name == name).first()
 
 
@@ -303,46 +445,48 @@ async def fetch_organization_by_name(name: str, organization_id: str, db: _orm.S
         _models.Organization.id != organization_id).first()
 
 
-async def create_organization(user: users_schemas.User, db: _orm.Session, organization: _schemas.OrganizationCreate):
+def create_organization(user: users_schemas.User, db: _orm.Session, organization: _schemas.OrganizationCreate):
     organization_id = uuid4().hex
-    organization = _models.Organization(id=organization_id, creator=user.id, mission=organization.mission,
-                                        vision=organization.vision, values=organization.values, name=organization.name,
-                                        country=organization.country,
-                                        state=organization.state, address=organization.address,
-                                        tagline=organization.tagline, image=organization.image, is_deleted=False,
-                                        current_subscription=organization.current_subscription,
-                                        currency_preference=organization.currency_preference)
+    newOrganization = _models.Organization(id=organization_id, creator=user.id, mission=organization.mission,
+                                           vision=organization.vision, values=organization.values,
+                                           name=organization.name,
+                                           country=organization.country, business_type=organization.business_type,
+                                           state=organization.state, address=organization.address,
+                                           tagline=organization.tagline, image=organization.image, is_deleted=False,
+                                           current_subscription=organization.current_subscription,
+                                           currency_preference=organization.currency_preference)
 
-    db.add(organization)
+    db.add(newOrganization)
     db.commit()
-    db.refresh(organization)
+    db.refresh(newOrganization)
+    return newOrganization
 
+
+def runWalletCreation(newOrganization: organisation_models.Organization, db: _orm.Session):
     roles = ["Assistant", "Admin", "Owner"]
-
     for role in roles:
         new_role = role_models.Role(
             id=uuid4().hex,
-            organization_id=organization.id.strip(),
+            organization_id=newOrganization.id.strip(),
             role_name=role.lower()
         )
         db.add(new_role)
         db.commit()
         db.refresh(new_role)
 
-    await create_wallet(organization_id=organization_id, currency=organization.currency_preference, db=db)
-    await create_credit_wallet(organization_id=organization_id, db=db)
+    create_wallet(organization_id=newOrganization.id,
+                  currency=newOrganization.currency_preference, db=db)
+    create_credit_wallet(organization_id=newOrganization.id, db=db)
 
-    return _schemas.Organization.from_orm(organization)
 
-
-async def get_organizations(user: users_schemas.User, db: _orm.Session):
+def get_organizations(user: users_schemas.User, db: _orm.Session):
     native_orgs = db.query(_models.Organization).filter_by(
         creator=user.id).all()
 
     invited_orgs_rep = (
         db.query(store_user_model.StoreUser)
-            .filter(store_user_model.StoreUser.user_id == user.id)
-            .all()
+        .filter(store_user_model.StoreUser.user_id == user.id)
+        .all()
     )
 
     if len(invited_orgs_rep) < 1:
@@ -352,7 +496,7 @@ async def get_organizations(user: users_schemas.User, db: _orm.Session):
         for pos in range(len(organization_list)):
             appBasePath = config('API_URL')
             imageURL = appBasePath + \
-                       f'/organizations/{organization_list[pos].id}/image'
+                f'/organizations/{organization_list[pos].id}/image'
             setattr(organization_list[pos], 'image_full_path', imageURL)
             organizationCollection.append(organization_list[pos])
 
@@ -363,8 +507,8 @@ async def get_organizations(user: users_schemas.User, db: _orm.Session):
     org = []
     for store_id in store_id_list:
         org = org + \
-              db.query(_models.Organization).filter(
-                  _models.Organization.id == store_id).all()
+            db.query(_models.Organization).filter(
+                _models.Organization.id == store_id).all()
 
     org_coll = native_orgs + org
     organizationCollection = []
@@ -380,8 +524,8 @@ async def get_organizations(user: users_schemas.User, db: _orm.Session):
 async def _organization_selector(organization_id: str, user: users_schemas.User, db: _orm.Session):
     organization = (
         db.query(_models.Organization)
-            .filter(_models.Organization.id == organization_id)
-            .first()
+        .filter(_models.Organization.id == organization_id)
+        .first()
     )
 
     if organization is None:
@@ -396,9 +540,10 @@ async def _organization_selector(organization_id: str, user: users_schemas.User,
 
 
 async def get_organization(organization_id: str, user: users_schemas.User, db: _orm.Session):
-    organization = await _organization_selector(organization_id=organization_id, user=user, db=db)
+    organization = await _organization_selector(
+        organization_id=organization_id, user=user, db=db)
 
-    return _schemas.Organization.from_orm(organization)
+    return organization
 
 
 async def delete_organization(organization_id: str, user: users_schemas.User, db: _orm.Session):
@@ -456,12 +601,15 @@ async def update_organization(organization_id: str, organization: _schemas.Organ
 
     # create a new wallet if the currency is changed
     if currencyUpdated:
-        await create_wallet(organization_id=organization_id, currency=organization.currency_preference, db=db)
+        create_wallet(organization_id=organization_id,
+                      currency=organization.currency_preference, db=db)
 
-    return _schemas.Organization.from_orm(organization_db)
+    menu = getOrgMenu(organization_id, db)
+
+    return {"data": {"organization": organization_db, "menu": menu}}
 
 
-async def create_wallet(organization_id: str, currency: str, db: _orm.Session):
+def create_wallet(organization_id: str, currency: str, db: _orm.Session):
     currency = currency.upper()
     wallet = db.query(wallet_models.Wallet).filter_by(organization_id=organization_id).filter_by(
         currency_code=currency).first()
@@ -476,8 +624,9 @@ async def create_wallet(organization_id: str, currency: str, db: _orm.Session):
         db.refresh(wallet)
 
 
-async def create_credit_wallet(organization_id: str, db: _orm.Session):
-    default_credit_wallet_balance = int(config('DEFAULT_CREDIT_WALLET_BALANCE'))
+def create_credit_wallet(organization_id: str, db: _orm.Session):
+    default_credit_wallet_balance = int(
+        config('DEFAULT_CREDIT_WALLET_BALANCE'))
     credit = credit_wallet_models.CreditWallet(id=uuid4().hex, organization_id=organization_id,
                                                amount=default_credit_wallet_balance,
                                                last_updated=_dt.datetime.utcnow())

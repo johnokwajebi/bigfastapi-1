@@ -1,3 +1,19 @@
+"""Customers
+
+This file contains a group of API routes related to customers. 
+You can create, retrieve, update and delete a customer object.
+
+Importing the routes: import customers from bigfastapi and FastAPI
+Then include with app.include_router(customers, tags=["Customers"])
+After that, the following endpoints will become available:
+
+ * /customers
+ * /customers/import/{organization_id}
+ * /customers/{customer_id}
+ * /customers/organization/{organization_id}
+
+"""
+
 from typing import List
 from xmlrpc.client import boolean
 from fastapi import APIRouter, Depends, status, HTTPException, File, UploadFile, BackgroundTasks
@@ -15,6 +31,7 @@ from fastapi_pagination import Page, add_pagination, paginate
 import csv
 import io
 import pandas as pd
+from bigfastapi.utils import paginator
 
 app = APIRouter(tags=["Customers 💁"],)
 
@@ -30,17 +47,46 @@ async def create_customer(
     db: Session = Depends(get_db),
     # user: users_schemas.User = Depends(is_authenticated)
 ):
+    """Creates a new customer object.
+    Args:
+        customer: A pydantic schema that defines the customer request parameters. e.g
+                        { "first_name" (required): "string", 
+                        "last_name" (required): "string",
+                        "unique_id" (required): "string",
+                        "organization_id" (required): "09512826638748bd9bd06d22812cc06b",
+                        "email": "string@gmail.com",
+                        "phone_number": "string",
+                        "business_name": "string",
+                        "location": "string",
+                        "gender": "string",
+                        "age": 0,
+                        "postal_code": "string",
+                        "language": "string",
+                        "country": "string",
+                        "city": "string",
+                        "region": "string",
+                        "country_code": "string",
+                        "other_info": [{"value": "string",
+                            "key": "string"}]
+                        }
+        db (Session): Session database connection for storing the customer object.
+        background_tasks: A parameter that allows tasks to be performed at the background
+        user: user authentication validator
+        
+    Returns:
+        status_code: HTTP_201_CREATED (new customer created)
+        response_model: CustomerResponse e.g
+                {message: str, customer: customer_instance}
+    Raises
+        HTTP_404_NOT_FOUND: object does not exist in db
+        HTTP_401_FORBIDDEN: Not Authenticated
+        HTTP_422_UNPROCESSABLE_ENTITY: request Validation error
+    """
     organization = db.query(Organization).filter(
         Organization.id == customer.organization_id).first()
     if not organization:
         return JSONResponse({"message": "Organization does not exist", "customer": []},
                             status_code=status.HTTP_404_NOT_FOUND)
-
-    existing_customers = await customer_models.fetch_customers(organization_id=customer.organization_id, db=db)
-    for item in existing_customers:
-        if customer.unique_id == item.unique_id:
-            return JSONResponse({"message": "The given unique_id already exist in the organization", "customer": []},
-                                status_code=status.HTTP_406_NOT_ACCEPTABLE)
 
     customer_instance = await customer_models.add_customer(customer=customer, organization_id=customer.organization_id, db=db)
 
@@ -61,6 +107,42 @@ async def create_bulk_customer(
     db: Session = Depends(get_db),
     # user: users_schemas.User = Depends(is_authenticated)
 ):
+    """Creates a multiple customer objects from a valid csv file.
+    Args:
+        organization_id: A unique identifier of an organisation
+        background_tasks: A parameter that allows tasks to be performed at the background
+        file: A standard csv file containing specific customer information to be created. e.g
+                        { "first_name" (required): "string", 
+                        "last_name" (required): "string",
+                        "unique_id" (required): "string",
+                        "organization_id" (required): "09512826638748bd9bd06d22812cc06b",
+                        "email": "string@gmail.com",
+                        "phone_number": "string",
+                        "business_name": "string",
+                        "location": "string",
+                        "gender": "string",
+                        "age": 0,
+                        "postal_code": "string",
+                        "language": "string",
+                        "country": "string",
+                        "city": "string",
+                        "region": "string",
+                        "country_code": "string",
+                        "other_info": [{"value": "string",
+                            "key": "string"}]
+                        }
+        db (Session): Session database connection for storing the customer object.
+        user: user authentication validator
+        
+    Returns:
+        status_code: HTTP_201_CREATED (new customer created)
+        response_model: CustomerResponse e.g
+                {message: str, customer: customer_instance}
+    Raises
+        HTTP_404_NOT_FOUND: object does not exist in db
+        HTTP_401_FORBIDDEN: Not Authenticated
+        HTTP_406_NOT_ACCEPTABLE: missing required fields or invalid file
+    """
 
     if file.content_type != "text/csv":
         return JSONResponse({"message": "file must be a valid csv", "customer": []},
@@ -91,27 +173,63 @@ async def create_bulk_customer(
 
 
 @app.get('/customers',
-         response_model=Page[customer_schemas.Customer],
+        #  response_model=customer_schemas.Customer,
          status_code=status.HTTP_200_OK
          )
 async def get_customers(
     organization_id: str,
     search_value: str = None,
-    sorting_key: str = "date_created",
+    sorting_key: str = None,
+    page: int = 1,
+    size: int = 50,
     reverse_sort: bool = True,
     db: Session = Depends(get_db),
     # user: users_schemas.User = Depends(is_authenticated)
 ):
+    """fetches all customers registered in an organisation sorted by most recently added.
+    Args:
+        organization_id: A unique identifier of an organisation
+        search_value (optional): A search string for filtering customers to be fetched
+        sorting_key (optional): A string by which to sort the list of customers
+             (most be a field in the customer object). defaults to "date_created" 
+        reverse_sort (optional): A boolean to determine if objects 
+            should be sorted in ascending or descending order. defaults to True (ascending order)
+        db (Session): Session database connection for storing the customer object.
+        user: user authentication validator
+        
+    Returns:
+        status_code: HTTP_200_OK (request successful)
+        response_model: paginated list of customers
+    Raises
+        HTTP_404_NOT_FOUND: orgainization not found
+        HTTP_401_FORBIDDEN: Not Authenticated
+        HTTP_422_UNPROCESSABLE_ENTITY: request Validation error
+    """ 
+    sort_dir = "asc" if reverse_sort == True else "desc"
+    page_size = 50 if size < 1 or size > 100 else size
+    offset = await paginator.off_set(page=page, size=page_size)
+    total_items = await paginator.total_row_count(model=Customer, organization_id=organization_id, db=db)
+    pointers = await paginator.page_urls(page=page, size=page_size, count=total_items, endpoint="/customers")
 
     organization = db.query(Organization).filter(
         Organization.id == organization_id).first()
     if not organization:
         return JSONResponse({"message": "Organization does not exist"}, status_code=status.HTTP_404_NOT_FOUND)
 
-    customers = await customer_models.fetch_customers(organization_id=organization_id, name=search_value, db=db)
-
-    customers.sort(key=lambda x: getattr(x, sorting_key, "firt_name"), reverse=reverse_sort)
-    return paginate(customers)
+    if search_value:
+        customers = await customer_models.search_customers(organization_id=organization_id, search_value=search_value,
+            offset=offset, size=page_size, db=db)
+    elif sorting_key:
+        customers = await customer_models.sort_customers(organization_id=organization_id, sort_key=sorting_key, 
+            offset=offset, size=page_size, sort_dir=sort_dir, db=db)
+    else:
+        customers = await customer_models.fetch_customers(organization_id=organization_id, offset=offset, 
+                size=page_size, db=db)
+    
+    response = {"page": page, "size": page_size, "total": total_items,
+        "previous_page":pointers['previous'], "next_page": pointers["next"], "items": customers,  }
+    # customers.sort(key=lambda x: getattr(x, sorting_key, "firt_name"), reverse=reverse_sort)
+    return response
 
 
 
@@ -124,20 +242,28 @@ async def get_customer(
     db: Session = Depends(get_db),
     # user: users_schemas.User = Depends(is_authenticated)
 ):
-    customer = db.query(Customer).filter(
-        Customer.customer_id == customer_id).first()
+    """Fetches a single customer object from the database using a unique customer id.
+    Args:
+        customer_id: A unique identifier of a customer
+        db (Session): Session database connection for storing the customer object.
+        user: user authentication validator
+        
+    Returns:
+        status_code: HTTP_200_OK (request successful)
+        response_model: CustomerResponse (schema)
+    Raises
+        HTTP_404_NOT_FOUND: object does not exist in db
+        HTTP_401_FORBIDDEN: Not Authenticated
+    """
+    customer = await customer_models.get_customer_by_id(customer_id=customer_id, db=db)
     if not customer:
         return JSONResponse({"message": "Customer does not exist"},
-                            status_code=status.HTTP_404_NOT_FOUND)
+            status_code=status.HTTP_404_NOT_FOUND)
+    other_info = await customer_models.get_other_customer_info(customer_id=customer_id, db=db)
+    setattr(customer, 'other_info', other_info)
 
-    other_info = db.query(customer_models.OtherInformation).filter(
-        customer_models.OtherInformation.customer_id == customer_id)
-
-    list_other_info = list(map( customer_schemas.OtherInfo.from_orm, other_info))
-    
-    setattr(customer, 'other_info', list_other_info)
-    
-    return {"message": "successfully fetched details", "customer": customer_schemas.Customer.from_orm(customer)}
+    return {"message": "successfully fetched details", 
+        "customer": customer_schemas.Customer.from_orm(customer)}
 
 
 
@@ -152,6 +278,40 @@ async def update_customer(
     db: Session = Depends(get_db),
     # user: users_schemas.User = Depends(is_authenticated)
 ):
+    """Updates a customer's detail.
+    Args:
+        customer_id: A unique identifier of a customer
+        background_tasks: A parameter that allows tasks to be performed at the background
+        db (Session): Session database connection for storing the customer object.
+        user: user authentication validator
+        customer: A pydantic schema that defines the customer request parameters to be updated.
+                All fields are optional e.g
+                        { unique_id: Optional[str] =None
+                        first_name: Optional[str] = None
+                        last_name: Optional[str] = None
+                        email: Optional[str] = None
+                        phone_number: Optional[str] = None
+                        organization_id: Optional[str] = None
+                        business_name: str =None
+                        location: str =None
+                        gender: Optional[str] = None
+                        age: Optional[int] = None
+                        postal_code: Optional[str] = None
+                        language: Optional[str] = None
+                        country: Optional[str] = None
+                        city: Optional[str] = None
+                        region: Optional[str] = None
+                        country_code: Optional[str] = None
+                        other_info: [{"value": "string",
+                            "key": "string"}]
+                        }
+    Returns:
+        status_code: HTTP_200_OK (request successful)
+        response_model: CustomerResponse (schema)
+    Raises
+        HTTP_404_NOT_FOUND: object does not exist in db
+        HTTP_401_FORBIDDEN: Not Authenticated
+    """ 
     customer_instance = db.query(Customer).filter(
         Customer.customer_id == customer_id).first()
     if not customer_instance:
@@ -182,7 +342,19 @@ async def soft_delete_customer(
     db: Session = Depends(get_db),
     # user: users_schemas.User = Depends(is_authenticated)
 ):
-
+    """Deletes a single customer object from the database using a unique customer id.
+    Args:
+        customer_id: A unique identifier of a customer
+        db (Session): Session database connection for storing the customer object.
+        user: user authentication validator
+        
+    Returns:
+        status_code: HTTP_200_OK (request successful)
+        response_model: {"message": "Customer deleted succesfully"}
+    Raises
+        HTTP_404_NOT_FOUND: object does not exist in db
+        HTTP_401_FORBIDDEN: Not Authenticated
+    """ 
     customer = db.query(Customer).filter(
         Customer.customer_id == customer_id).first()
     if not customer:
@@ -203,8 +375,20 @@ async def soft_delete_all_customers(
     organization_id: str,
     db: Session = Depends(get_db),
     # user: users_schemas.User = Depends(is_authenticated)
-):
-   
+):  
+    """Deletes all customers in an organization.
+    Args:
+        organization_id: A unique identifier of an organisation
+        db (Session): Session database connection for storing the customer object.
+        user: user authentication validator
+        
+    Returns:
+        status_code: HTTP_200_OK (request successful)
+        response_model: {"message": "Customers deleted succesfully"}
+    Raises
+        HTTP_404_NOT_FOUND: object does not exist in db
+        HTTP_401_FORBIDDEN: Not Authenticated
+    """    
     organization = db.query(Organization).filter(
         Organization.id == organization_id).first()
     if not organization:

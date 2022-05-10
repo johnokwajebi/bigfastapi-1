@@ -16,7 +16,8 @@ from starlette.responses import RedirectResponse
 from bigfastapi.db.database import get_db
 from .auth_api import is_authenticated
 from .models import credit_wallet_models as model, organisation_models, credit_wallet_conversion_models, wallet_models, \
-    wallet_transaction_models, credit_wallet_history_models
+    wallet_transaction_models, credit_wallet_history_models, store_user_model
+from .models.organisation_models import is_organization_member
 from .schemas import credit_wallet_schemas as schema, credit_wallet_conversion_schemas
 from .schemas import users_schemas
 from .schemas.wallet_schemas import PaymentProvider
@@ -36,11 +37,11 @@ async def add_rate(
         conversion = await _get_credit_wallet_conversion(currency=body.currency_code, db=db)
         if conversion is not None:
             raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                        detail="Currency " + body.currency_code + " already has a conversion rate")
+                                        detail="Currency " + body.currency_code.upper() + " already has a conversion rate")
 
         rate = credit_wallet_conversion_models.CreditWalletConversion(id=uuid4().hex,
                                                                       rate=body.rate,
-                                                                      currency_code=body.currency_code)
+                                                                      currency_code=body.currency_code.upper())
 
         db.add(rate)
         db.commit()
@@ -337,17 +338,22 @@ async def _update_credit_wallet(organization_id: str, credits_to_add: int, refer
 
 
 async def _get_market_rate(currency: str, db: _orm.Session):
+    usd_rate = db.query(credit_wallet_conversion_models.CreditWalletConversion).filter_by(
+        currency_code='USD').first()
+    if usd_rate is None:
+        raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="Currency " + currency + " does not have a conversion rate")
     currency = currency.upper()
 
     freeCurrencyApiKey = config("FREECURRENCY_API_KEY")
-    url = 'https://freecurrencyapi.net/api/v2/latest?apikey=' + freeCurrencyApiKey
+    url = 'https://api.currencyapi.com/v2/latest?apikey=' + freeCurrencyApiKey
     response = requests.get(url)
     if response.status_code == 200:
         jsonResponse = response.json()
         rates = jsonResponse['data']
-        rates['USD'] = 1
+        # rates['USD'] = 1
         if currency in rates:
-            rate = jsonResponse['data'][currency]
+            rate = usd_rate.rate * jsonResponse['data'][currency]
             conversion_rate = credit_wallet_conversion_models.CreditWalletConversion(id=uuid4().hex,
                                                                                      rate=rate,
                                                                                      currency_code=currency)
@@ -372,10 +378,17 @@ async def _get_organization(organization_id: str, db: _orm.Session,
     )
 
     if organization is None:
-        raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization does not exist")
+        is_store_member = await is_organization_member(user_id=user.id, organization_id=organization_id, db=db)
+        if is_store_member:
+            organization = (
+                db.query(organisation_models.Organization)
+                    .filter(organisation_models.Organization.id == organization_id)
+                    .first()
+            )
+        if (not is_store_member) or organization is None:
+            raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization does not exist")
 
     return organization
-
 
 async def _get_credit_wallet_conversion(currency: str, db: _orm.Session):
     conversion = (

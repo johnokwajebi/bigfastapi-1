@@ -9,9 +9,10 @@ from sqlalchemy import desc
 
 from bigfastapi.db.database import get_db
 from .auth_api import is_authenticated
-from .models import organisation_models as organisation_models, user_models
+from .models import organisation_models as organisation_models, user_models, store_user_model
 from .models import wallet_models as model
 from .models import wallet_transaction_models as wallet_transaction_models
+from .models.organisation_models import is_organization_member
 from .schemas import users_schemas
 from .schemas import wallet_schemas as schema
 
@@ -87,7 +88,14 @@ async def _get_organization(organization_id: str, db: _orm.Session,
             .first()
     )
 
-    if organization is None:
+    is_store_member = await is_organization_member(user_id=user.id, organization_id=organization_id, db=db)
+    if is_store_member:
+        organization = (
+            db.query(organisation_models.Organization)
+                .filter(organisation_models.Organization.id == organization_id)
+                .first()
+        )
+    if (not is_store_member) and organization is None:
         raise fastapi.HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization does not exist")
 
     return organization
